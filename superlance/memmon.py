@@ -28,8 +28,7 @@
 
 doc = """\
 memmon.py [-c] [-p processname=byte_size] [-g groupname=byte_size]
-          [-a byte_size] [-s sendmail] [-m email_address]
-          [-u uptime] [-n memmon_name]
+          [-a byte_size] 
 
 Options:
 
@@ -48,25 +47,6 @@ Options:
 -a -- specify a global byte_size.  Restart any child of the supervisord
       under which this runs if it uses more than byte_size RSS.
 
--s -- the sendmail command to use to send email
-      (e.g. "/usr/sbin/sendmail -t -i").  Must be a command which accepts
-      header and message data on stdin and sends mail.
-      Default is "/usr/sbin/sendmail -t -i".
-
--m -- specify an email address.  The script will send mail to this
-      address when any process is restarted.  If no email address is
-      specified, email will not be sent.
-
--u -- optionally specify the minimum uptime in seconds for the process.
-      if the process uptime is longer than this value, no email is sent
-      (useful to only be notified if processes are restarted too often/early)
-
-      seconds can be specified as plain integer values or a suffix-multiplied integer
-      (e.g. 1m). Valid suffixes are m (minute), h (hour) and d (day).
-
--n -- optionally specify the name of the memmon process. This name will
-      be used in the email subject to identify which memmon process
-      restarted the process.
 
 The -p and -g options may be specified more than once, allowing for
 specification of multiple groups and processes.
@@ -77,15 +57,25 @@ and 'GB'.
 
 A sample invocation:
 
-memmon.py -p program1=200MB -p theprog:thegroup=100MB -g thegroup=100MB -a 1GB -s "/usr/sbin/sendmail -t -i" -m chrism@plope.com -n "Project 1"
+memmon.py -p program1=200MB -p theprog:thegroup=100MB -g thegroup=100MB -a 1GB 
 """
 
 import os
 import sys
 import time
 from collections import namedtuple
-from superlance.compat import maxint
-from superlance.compat import xmlrpclib
+
+try:
+    from sys import maxsize as maxint
+except ImportError:
+    from sys import maxint
+try:
+    import xmlrpc.client as xmlrpclib
+except ImportError:
+    import xmlrpclib
+#delete because i get code up
+#from superlance.compat import maxint
+#from superlance.compat import xmlrpclib
 
 from supervisor import childutils
 from supervisor.datatypes import byte_size, SuffixMultiplier
@@ -99,14 +89,11 @@ def shell(cmd):
         return f.read()
 
 class Memmon:
-    def __init__(self, cumulative, programs, groups, any, sendmail, email, email_uptime_limit, name, rpc=None):
+    def __init__(self, cumulative, programs, groups, any,  name, rpc=None):
         self.cumulative = cumulative
         self.programs = programs
         self.groups = groups
         self.any = any
-        self.sendmail = sendmail
-        self.email = email
-        self.email_uptime_limit = email_uptime_limit
         self.memmonName = name
         self.rpc = rpc
         self.stdin = sys.stdin
@@ -114,7 +101,6 @@ class Memmon:
         self.stderr = sys.stderr
         self.pscommand = 'ps -orss= -p %s'
         self.pstreecommand = 'ps ax -o "pid= ppid= rss="'
-        self.mailed = False # for unit tests
 
     def runforever(self, test=False):
         while 1:
@@ -171,18 +157,22 @@ class Memmon:
                     if n in self.programs:
                         self.stderr.write('RSS of %s is %s\n' % (pname, rss))
                         if  rss > self.programs[name]:
+
+##need to modify
                             self.restart(pname, rss)
                             continue
 
                 if group in self.groups:
                     self.stderr.write('RSS of %s is %s\n' % (pname, rss))
                     if rss > self.groups[group]:
+##need to modify
                         self.restart(pname, rss)
                         continue
 
                 if self.any is not None:
                     self.stderr.write('RSS of %s is %s\n' % (pname, rss))
                     if rss > self.any:
+##need to modify
                         self.restart(pname, rss)
                         continue
 
@@ -191,42 +181,6 @@ class Memmon:
             if test:
                 break
 
-    def restart(self, name, rss):
-        info = self.rpc.supervisor.getProcessInfo(name)
-        uptime = info['now'] - info['start'] #uptime in seconds
-        self.stderr.write('Restarting %s\n' % name)
-        memmonId = self.memmonName and " [%s]" % self.memmonName or ""
-        try:
-            self.rpc.supervisor.stopProcess(name)
-        except xmlrpclib.Fault as e:
-            msg = ('Failed to stop process %s (RSS %s), exiting: %s' %
-                   (name, rss, e))
-            self.stderr.write(str(msg))
-            if self.email:
-                subject = 'memmon%s: failed to stop process %s, exiting' % (memmonId, name)
-                self.mail(self.email, subject, msg)
-            raise
-
-        try:
-            self.rpc.supervisor.startProcess(name)
-        except xmlrpclib.Fault as e:
-            msg = ('Failed to start process %s after stopping it, '
-                   'exiting: %s' % (name, e))
-            self.stderr.write(str(msg))
-            if self.email:
-                subject = 'memmon%s: failed to start process %s, exiting' % (memmonId, name)
-                self.mail(self.email, subject, msg)
-            raise
-
-        if self.email and uptime <= self.email_uptime_limit:
-            now = time.asctime()
-            msg = (
-                'memmon.py restarted the process named %s at %s because '
-                'it was consuming too much memory (%s bytes RSS)' % (
-                name, now, rss)
-                )
-            subject = 'memmon%s: process %s restarted' % (memmonId, name)
-            self.mail(self.email, subject, msg)
 
     def calc_rss(self, pid):
 
@@ -282,14 +236,6 @@ class Memmon:
         rss = rss * 1024  # rss is in KB
         return rss
 
-    def mail(self, email, subject, msg):
-        body = 'To: %s\n' % self.email
-        body += 'Subject: %s\n' % subject
-        body += '\n'
-        body += msg
-        with os.popen(self.sendmail, 'w') as m:
-            m.write(body)
-        self.mailed = body
 
 def parse_namesize(option, value):
     try:
@@ -325,17 +271,13 @@ def parse_seconds(option, value):
 
 def memmon_from_args(arguments):
     import getopt
-    short_args = "hcp:g:a:s:m:n:u:"
+    short_args = "hcp:g:a:"
     long_args = [
         "help",
         "cumulative",
         "program=",
         "group=",
-        "any=",
-        "sendmail_program=",
-        "email=",
-        "uptime=",
-        "name=",
+        "any="
         ]
 
     if not arguments:
@@ -349,10 +291,6 @@ def memmon_from_args(arguments):
     programs = {}
     groups = {}
     any = None
-    sendmail = '/usr/sbin/sendmail -t -i'
-    email = None
-    uptime_limit = maxint
-    name = None
 
     for option, value in opts:
 
@@ -374,26 +312,12 @@ def memmon_from_args(arguments):
             size = parse_size(option, value)
             any = size
 
-        if option in ('-s', '--sendmail_program'):
-            sendmail = value
-
-        if option in ('-m', '--email'):
-            email = value
-
-        if option in ('-u', '--uptime'):
-            uptime_limit = parse_seconds(option, value)
-
-        if option in ('-n', '--name'):
-            name = value
 
     memmon = Memmon(cumulative=cumulative,
                     programs=programs,
                     groups=groups,
-                    any=any,
-                    sendmail=sendmail,
-                    email=email,
-                    email_uptime_limit=uptime_limit,
-                    name=name)
+                    any=any
+                    )
     return memmon
 
 def main():
